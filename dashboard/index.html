@@ -1,0 +1,481 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Plum Escalation Command Center</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+<!-- ── Header ──────────────────────────────────── -->
+<header class="header">
+  <div class="header-left">
+    <h1>🏥 Plum Escalation Command Center</h1>
+    <p id="header-date">Loading...</p>
+  </div>
+  <div class="header-right">
+    <span class="badge-live">● LIVE</span>
+    <button class="btn-sources" onclick="openSettings()">⚙ Connect Sources</button>
+    <button class="btn-upload" onclick="openUpload()">↑ Upload CSV</button>
+    <button class="btn-refresh" onclick="refreshAll()">↻ Refresh</button>
+    <button class="btn-export" onclick="exportCSV()">⬇ Export CSV</button>
+    <button class="btn-clear" onclick="openClearModal()">🗑 Clear Data</button>
+  </div>
+</header>
+
+<!-- ── Clear Data Modal ───────────────────────── -->
+<div class="modal-overlay" id="clear-overlay" onclick="closeClearModal()"></div>
+<div class="modal" id="clear-modal" style="width:420px;">
+  <div class="modal-header" style="background:#fef2f2;border-bottom:1px solid #fecaca;">
+    <h3 style="color:#dc2626;">🗑 Clear Data</h3>
+    <button class="modal-close" onclick="closeClearModal()">✕</button>
+  </div>
+  <div class="modal-body" style="padding:20px 24px;">
+    <p style="font-size:13px;color:#374151;margin-bottom:16px;">Choose which records to delete from the database:</p>
+    <div class="clear-options">
+      <label class="clear-opt">
+        <input type="radio" name="clear-scope" value="today" checked />
+        <div>
+          <strong>Today's records</strong>
+          <span>Delete all records added today</span>
+        </div>
+      </label>
+      <label class="clear-opt">
+        <input type="radio" name="clear-scope" value="channel-gmail" />
+        <div>
+          <strong>Gmail records</strong>
+          <span>Delete all Gmail-sourced records</span>
+        </div>
+      </label>
+      <label class="clear-opt">
+        <input type="radio" name="clear-scope" value="channel-slack" />
+        <div>
+          <strong>Slack records</strong>
+          <span>Delete all Slack-sourced records</span>
+        </div>
+      </label>
+      <label class="clear-opt">
+        <input type="radio" name="clear-scope" value="channel-whatsapp" />
+        <div>
+          <strong>WhatsApp records</strong>
+          <span>Delete all WhatsApp-sourced records</span>
+        </div>
+      </label>
+      <label class="clear-opt danger">
+        <input type="radio" name="clear-scope" value="all" />
+        <div>
+          <strong>⚠ All records</strong>
+          <span>Delete everything — full reset</span>
+        </div>
+      </label>
+    </div>
+    <div id="clear-confirm-row" style="display:none;margin-top:14px;padding:10px 14px;background:#fef2f2;border-radius:8px;border:1px solid #fecaca;">
+      <p style="font-size:12px;color:#dc2626;font-weight:600;">Type <strong>DELETE</strong> to confirm:</p>
+      <input type="text" id="clear-confirm-input" placeholder="Type DELETE" style="margin-top:6px;width:100%;padding:7px 10px;border:1.5px solid #fca5a5;border-radius:6px;font-size:13px;" />
+    </div>
+    <div class="modal-footer" style="margin-top:16px;">
+      <button class="btn-cancel" onclick="closeClearModal()">Cancel</button>
+      <button id="btn-do-clear" class="btn-clear-confirm" onclick="executeClears()">Delete Records</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Stats Cards ──────────────────────────────── -->
+<div class="stats-row">
+  <div class="stat-card blue">
+    <div class="label">Total Escalations</div>
+    <div class="value" id="stat-total">—</div>
+    <div class="sub">All real escalations</div>
+  </div>
+  <div class="stat-card red">
+    <div class="label">High Priority</div>
+    <div class="value" id="stat-high">—</div>
+    <div class="sub">Score ≥ 8</div>
+  </div>
+  <div class="stat-card red">
+    <div class="label">SLA Breached</div>
+    <div class="value" id="stat-sla">—</div>
+    <div class="sub">Past deadline, not closed</div>
+  </div>
+  <div class="stat-card orange">
+    <div class="label">Blocked</div>
+    <div class="value" id="stat-blocked">—</div>
+    <div class="sub">Waiting on 3rd party</div>
+  </div>
+  <div class="stat-card green">
+    <div class="label">Closed Today</div>
+    <div class="value" id="stat-closed">—</div>
+    <div class="sub">Resolved today</div>
+  </div>
+  <div class="stat-card orange">
+    <div class="label">VP Watch</div>
+    <div class="value" id="stat-vp-watch">—</div>
+    <div class="sub">Under VP observation</div>
+  </div>
+</div>
+
+<!-- ── Tabs ─────────────────────────────────────── -->
+<div class="tabs" style="margin-top:20px;">
+  <div class="tab active" id="tab-escalations" onclick="switchTab('escalations')">📋 Escalations</div>
+  <div class="tab" id="tab-vpwatch" onclick="switchTab('vpwatch')">👁 VP Watch</div>
+  <div class="tab" id="tab-noise" onclick="switchTab('noise')">🔕 Non-Escalations Log</div>
+</div>
+
+<!-- ── Filter Bar ───────────────────────────────── -->
+<div class="filter-bar" id="main-filter-bar" style="margin-top:12px;">
+  <select id="filter-status" onchange="applyFilters()">
+    <option value="">All Statuses</option>
+    <option value="Open">Open</option>
+    <option value="In Progress">In Progress</option>
+    <option value="Blocked">Blocked</option>
+    <option value="Closed">Closed</option>
+  </select>
+  <select id="filter-urgency" onchange="applyFilters()">
+    <option value="">All Urgency</option>
+    <option value="High">🔴 High</option>
+    <option value="Medium">🟠 Medium</option>
+    <option value="Low">🟢 Low</option>
+  </select>
+  <select id="filter-department" onchange="applyFilters()">
+    <option value="">All Departments</option>
+    <option value="Claims Team">Claims Team</option>
+    <option value="TPA & Hospital Desk">TPA & Hospital Desk</option>
+    <option value="Legal & Compliance">Legal & Compliance</option>
+    <option value="PR & Communications">PR & Communications</option>
+    <option value="Operations Team">Operations Team</option>
+    <option value="Data & Finance Ops">Data & Finance Ops</option>
+    <option value="Renewals Team">Renewals Team</option>
+    <option value="Customer Success">Customer Success</option>
+    <option value="Account Management">Account Management</option>
+  </select>
+  <select id="filter-channel" onchange="applyFilters()">
+    <option value="">All Channels</option>
+    <option value="gmail">Gmail</option>
+    <option value="slack">Slack</option>
+    <option value="whatsapp">WhatsApp</option>
+  </select>
+  <select id="filter-owner" onchange="applyFilters()">
+    <option value="">All Owners</option>
+  </select>
+  <select id="filter-date" onchange="applyFilters()">
+    <option value="">All Time</option>
+    <option value="today">Today</option>
+    <option value="yesterday">Yesterday</option>
+    <option value="week">This Week</option>
+  </select>
+  <input type="text" id="filter-search" placeholder="🔍  Search account or message..." oninput="applyFilters()" />
+  <button class="btn-filter-clear" onclick="clearAllFilters()" title="Reset all filters">✕ Clear Filters</button>
+</div>
+
+<!-- ── Escalation Table ─────────────────────────── -->
+<div class="table-wrap" id="table-escalations">
+  <table>
+    <thead>
+      <tr>
+        <th>#</th>
+        <th>Account</th>
+        <th>Channel</th>
+        <th>Department</th>
+        <th>Category</th>
+        <th>Priority</th>
+        <th>Summary</th>
+        <th>Owner</th>
+        <th>Status</th>
+        <th>TAT</th>
+        <th>Action Needed</th>
+        <th>VP Check</th>
+        <th>SLA</th>
+        <th>VP Watch</th>
+      </tr>
+    </thead>
+    <tbody id="table-body">
+      <tr class="loading-row"><td colspan="14">Loading escalations...</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- ── VP Watch Table ───────────────────────────── -->
+<div class="table-wrap" id="table-vpwatch" style="display:none;">
+  <table>
+    <thead>
+      <tr>
+        <th>#</th>
+        <th>Account</th>
+        <th>Channel</th>
+        <th>Department</th>
+        <th>VP Priority</th>
+        <th>Escalated To</th>
+        <th>VP Note</th>
+        <th>Status</th>
+        <th>TAT</th>
+        <th>SLA</th>
+        <th>Actions</th>
+      </tr>
+    </thead>
+    <tbody id="vpwatch-body">
+      <tr class="loading-row"><td colspan="11">Loading VP Watch list...</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- ── Non-Escalations Table ────────────────────── -->
+<div class="table-wrap" id="table-noise" style="display:none;">
+  <table>
+    <thead>
+      <tr>
+        <th>#</th>
+        <th>Sender</th>
+        <th>Channel</th>
+        <th>Received</th>
+        <th>Message Preview</th>
+        <th>AI Reason</th>
+      </tr>
+    </thead>
+    <tbody id="noise-body">
+      <tr class="loading-row"><td colspan="6">Loading...</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- ── Detail Drawer ────────────────────────────── -->
+<div class="drawer-overlay" id="drawer-overlay" onclick="closeDrawer()"></div>
+<div class="drawer" id="drawer">
+  <button class="drawer-close" onclick="closeDrawer()">✕</button>
+  <h2 id="drawer-account">—</h2>
+  <div class="drawer-meta" id="drawer-meta">—</div>
+
+  <div class="drawer-grid" style="margin-bottom:18px;" id="drawer-grid"></div>
+
+  <div class="drawer-section">
+    <label>Full Message</label>
+    <div class="raw-msg" id="drawer-raw">—</div>
+  </div>
+
+  <div class="drawer-section">
+    <label>AI Summary</label>
+    <div class="raw-msg" id="drawer-summary" style="background:#eff6ff;border-color:#bfdbfe;">—</div>
+  </div>
+
+  <div class="drawer-section">
+    <label>Action Needed</label>
+    <div class="raw-msg" id="drawer-action" style="background:#f0fdf4;border-color:#bbf7d0;">—</div>
+  </div>
+
+  <div class="drawer-section">
+    <label>Resolution Notes</label>
+    <textarea id="drawer-notes" placeholder="Add resolution notes..." onblur="saveNotes()"></textarea>
+  </div>
+</div>
+
+<!-- ── VP Watch Escalation Modal ─────────────── -->
+<div class="modal-overlay" id="vpwatch-overlay" onclick="closeVpWatchModal()"></div>
+<div class="modal" id="vpwatch-modal" style="width:480px;">
+  <div class="modal-header">
+    <h3>👁 VP Watch — Flag &amp; Escalate</h3>
+    <button class="modal-close" onclick="closeVpWatchModal()">✕</button>
+  </div>
+  <div class="modal-body" style="padding:20px 24px;">
+    <input type="hidden" id="vp-case-id" />
+
+    <div class="vp-modal-case" id="vp-case-summary">—</div>
+
+    <div class="vp-field">
+      <label>Priority Flag <span class="req">*</span></label>
+      <div class="vp-priority-grid">
+        <label class="vp-priority-opt critical">
+          <input type="radio" name="vp-urgency" value="CRITICAL" />
+          <span>🔴 CRITICAL<br><small>4h SLA — Immediate action</small></span>
+        </label>
+        <label class="vp-priority-opt high">
+          <input type="radio" name="vp-urgency" value="HIGH" checked />
+          <span>🟠 HIGH<br><small>24h SLA — Same day</small></span>
+        </label>
+        <label class="vp-priority-opt medium">
+          <input type="radio" name="vp-urgency" value="MEDIUM" />
+          <span>🟡 MEDIUM<br><small>48h SLA — This week</small></span>
+        </label>
+      </div>
+    </div>
+
+    <div class="vp-field">
+      <label>Escalate to Department</label>
+      <select id="vp-escalate-dept">
+        <option value="">— Keep current department —</option>
+        <option value="Claims Team">Claims Team (Operations)</option>
+        <option value="GRO">Grievance Redressal Cell (GRO)</option>
+        <option value="Legal &amp; Compliance">Legal &amp; Compliance</option>
+        <option value="Insurer Coordination">Insurer Coordination Team</option>
+        <option value="Hospital &amp; Provider">Hospital / Provider Network</option>
+        <option value="Account Management">Account Management (Corporate)</option>
+        <option value="Quality &amp; Audit">Quality &amp; Audit Team</option>
+        <option value="Product/Tech">Product / Tech Team</option>
+        <option value="Customer Support">Customer Support</option>
+      </select>
+    </div>
+
+    <div class="vp-field">
+      <label>VP Note <span style="font-size:11px;color:#9ca3af;">(reason for flagging)</span></label>
+      <textarea id="vp-note-input" placeholder="e.g. Key corporate account — needs immediate resolution today..." rows="3"></textarea>
+    </div>
+
+    <div class="modal-footer" style="margin-top:16px;">
+      <button class="btn-cancel" onclick="closeVpWatchModal()">Cancel</button>
+      <button class="btn-ingest" onclick="confirmVpWatch()">Flag &amp; Escalate →</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Connect Sources Modal ─────────────────────── -->
+<div class="modal-overlay" id="settings-overlay" onclick="closeSettings()"></div>
+<div class="modal" id="settings-modal">
+  <div class="modal-header">
+    <h3>⚙ Connect Message Sources</h3>
+    <button class="modal-close" onclick="closeSettings()">✕</button>
+  </div>
+  <div class="modal-body">
+
+    <!-- Gmail -->
+    <div class="source-section">
+      <div class="source-header">
+        <span class="source-icon gmail-icon">✉</span>
+        <div>
+          <h4>Gmail <span id="gmail-status-badge"></span></h4>
+          <p>Polls your inbox every 2 minutes for new escalations</p>
+        </div>
+      </div>
+      <div class="source-add-row">
+        <input type="email" id="gmail-email-input" placeholder="your@gmail.com" />
+        <input type="password" id="gmail-pass-input" placeholder="App Password (16 chars, not your Gmail password)" />
+        <button class="btn-test-conn" onclick="testGmail()">Test</button>
+        <button onclick="connectGmail()">Connect</button>
+      </div>
+      <div id="gmail-test-result"></div>
+      <div class="source-hint">
+        <strong>How to get App Password:</strong> myaccount.google.com → Security → 2-Step Verification → App Passwords → Select "Mail" → Generate
+      </div>
+      <div class="source-chips" id="gmail-chips"></div>
+    </div>
+
+    <!-- Slack -->
+    <div class="source-section">
+      <div class="source-header">
+        <span class="source-icon slack-icon">#</span>
+        <div>
+          <h4>Slack <span id="slack-status-badge"></span></h4>
+          <p>Polls channels every 30 seconds for new messages</p>
+        </div>
+      </div>
+      <div class="source-add-row">
+        <input type="password" id="slack-token-input" placeholder="Bot Token (xoxb-...)" style="flex:2" />
+        <button class="btn-test-conn" onclick="testSlack()">Test Token</button>
+      </div>
+      <div id="slack-test-result"></div>
+      <div class="source-add-row" style="margin-top:6px;">
+        <input type="text" id="slack-channel-input" placeholder="Channel ID (e.g. C01234ABCD)" />
+        <input type="text" id="slack-channel-name-input" placeholder="Name (e.g. #escalations)" style="flex:0.8" />
+        <button onclick="connectSlack()">Add Channel</button>
+      </div>
+      <div class="source-hint">
+        <strong>Setup:</strong> api.slack.com/apps → Create App → OAuth &amp; Permissions → Scopes: <code>channels:history</code> <code>users:read</code> → Install to Workspace → Copy Bot Token. Then run <code>/invite @YourApp</code> in each channel.
+      </div>
+      <div class="source-chips" id="slack-chips"></div>
+    </div>
+
+    <!-- WhatsApp (future) -->
+    <div class="source-section" style="opacity:0.55;">
+      <div class="source-header">
+        <span class="source-icon wa-icon">📱</span>
+        <div>
+          <h4>WhatsApp <span style="font-size:11px;color:#9ca3af;font-weight:400;">— coming soon via Twilio</span></h4>
+          <p>Use Upload CSV in the meantime to add WhatsApp messages.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ── Upload / Paste Modal ───────────────────────── -->
+<div class="modal-overlay" id="upload-overlay" onclick="closeUpload()"></div>
+<div class="modal" id="upload-modal" style="width:620px;">
+  <div class="modal-header">
+    <h3>↑ Add Data — Any Format</h3>
+    <button class="modal-close" onclick="closeUpload()">✕</button>
+  </div>
+  <div class="modal-body">
+
+    <!-- Tab bar -->
+    <div class="upload-tabs">
+      <button class="upload-tab active" id="utab-file" onclick="switchUploadTab('file')">📁 Upload File</button>
+      <button class="upload-tab" id="utab-paste" onclick="switchUploadTab('paste')">📋 Paste / Type Data</button>
+    </div>
+
+    <!-- ── File tab ── -->
+    <div id="upload-tab-file">
+      <div class="upload-zone" id="upload-zone"
+        onclick="document.getElementById('csv-file-input').click()"
+        ondragover="event.preventDefault();this.classList.add('drag-over')"
+        ondragleave="this.classList.remove('drag-over')"
+        ondrop="handleDrop(event)">
+        <div class="upload-icon">📂</div>
+        <p class="upload-main">Drop file here or click to browse</p>
+        <p class="upload-sub">CSV, TSV, or JSON — any column names accepted</p>
+        <input type="file" id="csv-file-input" accept=".csv,.tsv,.json,.txt" style="display:none" onchange="handleFileSelect(event)" />
+      </div>
+      <div class="upload-hint">
+        <strong>Accepted formats:</strong> CSV &nbsp;|&nbsp; TSV (tab-separated) &nbsp;|&nbsp; JSON array<br>
+        <strong>Column names don't need to match</strong> — you'll map them after upload.<br>
+        <strong>source_channel values:</strong> gmail &nbsp;|&nbsp; slack &nbsp;|&nbsp; whatsapp
+      </div>
+    </div>
+
+    <!-- ── Paste tab ── -->
+    <div id="upload-tab-paste" style="display:none">
+      <textarea id="paste-input" class="paste-textarea"
+        placeholder="Paste your data here in any format:&#10;&#10;• CSV: channel,name,email,message&#10;  gmail,John,john@co.com,Our claim is stuck...&#10;&#10;• JSON: [{&quot;from&quot;:&quot;John&quot;,&quot;msg&quot;:&quot;Claim rejected&quot;}]&#10;&#10;• TSV: paste directly from Excel&#10;&#10;• Plain rows: one message per line (will be asked for sender details)"></textarea>
+      <button class="btn-parse" onclick="parsePastedData()">Detect &amp; Parse →</button>
+    </div>
+
+    <!-- ── Column Mapper (shown when headers don't match) ── -->
+    <div id="col-mapper" style="display:none">
+      <div class="mapper-title">Map your columns to our fields</div>
+      <div class="mapper-sub">Your file has columns that don't match our field names — select which column maps to which field.</div>
+      <div class="mapper-detected" id="mapper-detected-chips"></div>
+      <div class="mapper-grid" id="mapper-grid"></div>
+      <button class="btn-apply-map" onclick="applyMapping()">✓ Apply Mapping &amp; Preview →</button>
+    </div>
+
+    <!-- ── Preview (shared) ── -->
+    <div id="upload-preview" style="display:none">
+      <div class="preview-header">
+        <span id="preview-count">0 rows ready</span>
+        <button class="btn-clear-file" onclick="clearFile()">✕ Clear</button>
+      </div>
+      <div class="preview-table-wrap">
+        <table class="preview-table">
+          <thead><tr>
+            <th>#</th><th>Channel</th><th>Sender</th><th>Contact</th><th>Message Preview</th>
+          </tr></thead>
+          <tbody id="preview-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ── Progress (shared) ── -->
+    <div id="upload-progress" style="display:none">
+      <div class="progress-bar-wrap">
+        <div class="progress-bar" id="progress-bar" style="width:0%"></div>
+      </div>
+      <p id="progress-text" style="font-size:12px;color:#6b7280;margin-top:6px;text-align:center;">Ingesting...</p>
+    </div>
+
+    <div class="modal-footer">
+      <button class="btn-cancel" onclick="closeUpload()">Cancel</button>
+      <button class="btn-ingest" id="btn-ingest" onclick="ingestCSV()" disabled>Ingest Rows →</button>
+    </div>
+  </div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>

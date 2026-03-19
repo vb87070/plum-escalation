@@ -1,0 +1,118 @@
+{
+  "name": "Slack → Plum Escalation Dashboard",
+  "nodes": [
+    {
+      "parameters": {
+        "trigger": "any_event",
+        "events": ["message"],
+        "downloadFiles": false,
+        "options": {}
+      },
+      "id": "slack-trigger-node",
+      "name": "Slack Trigger",
+      "type": "n8n-nodes-base.slackTrigger",
+      "typeVersion": 1,
+      "position": [240, 300],
+      "webhookId": "plum-slack-webhook",
+      "credentials": {
+        "slackApi": {
+          "id": "2",
+          "name": "Slack account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "filter-bot",
+              "leftValue": "={{ $json.bot_id }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            },
+            {
+              "id": "filter-text",
+              "leftValue": "={{ $json.text }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEquals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "filter-node",
+      "name": "Filter (skip bots & empty)",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2,
+      "position": [500, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:8000/webhook/ingest",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"source_channel\": \"slack\",\n  \"source_message_id\": \"slack-{{ $json.channel }}-{{ $json.ts }}\",\n  \"received_at\": \"{{ $json.ts }}\",\n  \"sender_name\": \"{{ $json.user_profile && $json.user_profile.real_name ? $json.user_profile.real_name : ($json.username || $json.user || 'Unknown') }}\",\n  \"sender_contact\": \"@{{ $json.user_profile && $json.user_profile.name ? $json.user_profile.name : ($json.user || 'unknown') }}\",\n  \"raw_message\": \"{{ $json.text }}\"\n}",
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "http-request-slack",
+      "name": "Send to Plum Dashboard",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [760, 300]
+    }
+  ],
+  "connections": {
+    "Slack Trigger": {
+      "main": [
+        [
+          {
+            "node": "Filter (skip bots & empty)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter (skip bots & empty)": {
+      "main": [
+        [
+          {
+            "node": "Send to Plum Dashboard",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "tags": []
+}

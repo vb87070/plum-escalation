@@ -1,0 +1,7 @@
+backend/escalations.db
+backend/sources_config.json
+backend/__pycache__/
+**/__pycache__/
+**/*.pyc
+*.pyc
+.env
