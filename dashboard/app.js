@@ -1,5 +1,5 @@
 // ── Config ───────────────────────────────────────
-const API_BASE = "http://localhost:8000";
+const API_BASE = "https://plum-escalation-production.up.railway.app";
 let currentTab = "escalations";
 let activeDrawerId = null;
 let autoRefreshInterval = null;
