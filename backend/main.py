@@ -6,10 +6,14 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
+import jwt as _jwt
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
+from starlette.responses import JSONResponse
 
 from database import init_db, get_connection
 from models import InboundMessage, EscalationUpdate
@@ -19,6 +23,40 @@ import gmail_poller
 import slack_poller
 import router as complaint_router
 from departments import DEPARTMENTS, get_department
+
+# ── JWT Auth ──────────────────────────────────────────
+_JWT_SECRET = os.environ.get("JWT_SECRET_KEY", "plum-dev-secret-change-in-production")
+_JWT_ALGO   = "HS256"
+_JWT_HOURS  = 24
+
+def _make_token(username: str) -> str:
+    payload = {"sub": username, "exp": datetime.now(timezone.utc) + timedelta(hours=_JWT_HOURS)}
+    return _jwt.encode(payload, _JWT_SECRET, algorithm=_JWT_ALGO)
+
+class _JWTMiddleware(BaseHTTPMiddleware):
+    _OPEN = {"/", "/api/auth/login", "/docs", "/openapi.json", "/redoc"}
+    async def dispatch(self, request: Request, call_next):
+        if request.method == "OPTIONS":          # allow CORS preflight
+            return await call_next(request)
+        path = request.url.path
+        if path in self._OPEN or path.startswith("/webhook/"):
+            return await call_next(request)
+        if not path.startswith("/api/"):
+            return await call_next(request)
+        auth = request.headers.get("Authorization", "")
+        if not auth.startswith("Bearer "):
+            return JSONResponse({"detail": "Not authenticated"}, status_code=401)
+        try:
+            _jwt.decode(auth[7:], _JWT_SECRET, algorithms=[_JWT_ALGO])
+        except _jwt.ExpiredSignatureError:
+            return JSONResponse({"detail": "Token expired — please log in again"}, status_code=401)
+        except _jwt.InvalidTokenError:
+            return JSONResponse({"detail": "Invalid token"}, status_code=401)
+        return await call_next(request)
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
 
 
 @asynccontextmanager
@@ -35,6 +73,15 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Plum Escalation Management API", version="1.0", lifespan=lifespan)
 
+# Middleware order: JWT added first (inner), CORS added second (outer = runs first, handles OPTIONS)
+app.add_middleware(_JWTMiddleware)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 # Department auto-routing based on issue category
 DEPARTMENT_MAP = {
     "Claim Processing":    "Claims Team",
@@ -49,12 +96,6 @@ DEPARTMENT_MAP = {
     "Other":               "Account Management",
 }
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
 
 # (startup handled by lifespan above)
@@ -66,6 +107,18 @@ app.add_middleware(
 @app.get("/")
 def health():
     return {"status": "ok", "service": "Plum Escalation API"}
+
+
+# ─────────────────────────────────────────────
+# Auth
+# ─────────────────────────────────────────────
+@app.post("/api/auth/login")
+def login(body: LoginRequest):
+    username = os.environ.get("DASHBOARD_USERNAME", "admin")
+    password = os.environ.get("DASHBOARD_PASSWORD", "plum2024")
+    if body.username != username or body.password != password:
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    return {"token": _make_token(body.username), "expires_in": _JWT_HOURS * 3600}
 
 
 # ─────────────────────────────────────────────
@@ -455,6 +508,38 @@ def get_stats():
     cursor.execute("SELECT COUNT(*) FROM escalations WHERE is_escalation = 1 AND vp_watch = 1")
     vp_watch_count = cursor.fetchone()[0]
 
+    # ── North Star: SLA Resolution Rate ───────────────
+    cursor.execute("""
+        SELECT COUNT(*) FROM escalations
+        WHERE is_escalation = 1 AND status = 'Closed'
+          AND closed_at IS NOT NULL AND sla_deadline_at IS NOT NULL
+          AND closed_at <= sla_deadline_at
+    """)
+    closed_within_sla = cursor.fetchone()[0]
+
+    cursor.execute("SELECT COUNT(*) FROM escalations WHERE is_escalation = 1 AND status = 'Closed'")
+    total_closed = cursor.fetchone()[0]
+
+    sla_resolution_rate = round((closed_within_sla / total_closed * 100), 1) if total_closed > 0 else None
+
+    # Average resolution time (hours)
+    cursor.execute("""
+        SELECT AVG((julianday(closed_at) - julianday(created_at)) * 24)
+        FROM escalations
+        WHERE is_escalation = 1 AND status = 'Closed' AND closed_at IS NOT NULL
+    """)
+    avg_res_row = cursor.fetchone()[0]
+    avg_resolution_hours = round(avg_res_row, 1) if avg_res_row else 0
+
+    # Escalations at risk: open, SLA expires within 2 hours
+    two_hours_later = (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat()
+    cursor.execute("""
+        SELECT COUNT(*) FROM escalations
+        WHERE is_escalation = 1 AND status NOT IN ('Closed')
+          AND sla_deadline_at > ? AND sla_deadline_at <= ?
+    """, (now_iso, two_hours_later))
+    escalations_at_risk = cursor.fetchone()[0]
+
     conn.close()
 
     return {
@@ -468,6 +553,11 @@ def get_stats():
         "by_status": by_status,
         "by_channel": by_channel,
         "by_department": by_department,
+        # North Star fields
+        "sla_resolution_rate": sla_resolution_rate,
+        "total_closed": total_closed,
+        "avg_resolution_hours": avg_resolution_hours,
+        "escalations_at_risk": escalations_at_risk,
     }
 
 
@@ -623,3 +713,33 @@ def routing_stats():
             for k, v in DEPARTMENTS.items()
         },
     }
+
+
+# ─────────────────────────────────────────────
+# GET /api/stats/trend — 7-day daily counts
+# ─────────────────────────────────────────────
+@app.get("/api/stats/trend")
+def get_trend(days: int = Query(7, ge=1, le=30)):
+    """Return daily escalation counts for the last N days (fills zeros for missing days)."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(f"""
+        WITH RECURSIVE dates(d) AS (
+            SELECT date('now', '-{days - 1} days')
+            UNION ALL
+            SELECT date(d, '+1 day') FROM dates WHERE d < date('now')
+        )
+        SELECT
+            d AS date,
+            COUNT(e.id)                                              AS total,
+            SUM(CASE WHEN e.urgency = 'High' THEN 1 ELSE 0 END)    AS high,
+            SUM(CASE WHEN e.status  = 'Closed' THEN 1 ELSE 0 END)  AS closed
+        FROM dates
+        LEFT JOIN escalations e
+               ON date(e.created_at) = d AND e.is_escalation = 1
+        GROUP BY d
+        ORDER BY d
+    """)
+    rows = [dict(r) for r in cursor.fetchall()]
+    conn.close()
+    return {"days": rows}

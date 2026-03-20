@@ -4,12 +4,79 @@ let currentTab = "escalations";
 let activeDrawerId = null;
 let autoRefreshInterval = null;
 
+// ── Auth helpers ─────────────────────────────────
+function getToken()        { return localStorage.getItem("plum_token"); }
+function setToken(t)       { localStorage.setItem("plum_token", t); }
+function clearToken()      { localStorage.removeItem("plum_token"); }
+
+function showLoginOverlay() {
+  document.getElementById("login-overlay").style.display = "flex";
+}
+function hideLoginOverlay() {
+  document.getElementById("login-overlay").style.display = "none";
+}
+
+async function doLogin(e) {
+  e.preventDefault();
+  const btn = document.getElementById("login-btn");
+  const errEl = document.getElementById("login-error");
+  const username = document.getElementById("login-username").value.trim();
+  const password = document.getElementById("login-password").value;
+  btn.disabled = true;
+  btn.textContent = "Signing in...";
+  errEl.style.display = "none";
+  try {
+    const res = await fetch(`${API_BASE}/api/auth/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username, password }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || "Login failed");
+    setToken(data.token);
+    hideLoginOverlay();
+    refreshAll();
+    startAutoRefresh();
+  } catch(err) {
+    errEl.textContent = "✗ " + err.message;
+    errEl.style.display = "block";
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Sign In →";
+  }
+}
+
+function doLogout() {
+  clearToken();
+  showLoginOverlay();
+  if (autoRefreshInterval) { clearInterval(autoRefreshInterval); autoRefreshInterval = null; }
+}
+
+// ── Authenticated fetch wrapper ───────────────────
+async function apiFetch(url, options = {}) {
+  const token = getToken();
+  const headers = { ...(options.headers || {}) };
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+  const res = await fetch(url, { ...options, headers });
+  if (res.status === 401) {
+    clearToken();
+    showLoginOverlay();
+    throw new Error("Session expired — please log in again");
+  }
+  return res;
+}
+
 // ── Init ─────────────────────────────────────────
 window.addEventListener("DOMContentLoaded", () => {
   document.getElementById("header-date").textContent =
     "Today: " + new Date().toLocaleDateString("en-IN", { weekday: "long", year: "numeric", month: "long", day: "numeric" });
-  refreshAll();
-  startAutoRefresh();
+
+  if (getToken()) {
+    refreshAll();
+    startAutoRefresh();
+  } else {
+    showLoginOverlay();
+  }
 });
 
 function startAutoRefresh() {
@@ -21,28 +88,32 @@ function refreshAll() {
   fetchStats();
   if (currentTab === "escalations") applyFilters();
   else if (currentTab === "vpwatch")  fetchVpWatch();
+  else if (currentTab === "analytics") loadAnalytics();
   else fetchNoise();
 }
 
 // ── Tab switching ─────────────────────────────────
 function switchTab(tab) {
   currentTab = tab;
-  ["escalations","vpwatch","noise"].forEach(t => {
-    document.getElementById(`tab-${t}`).className = "tab" + (tab === t ? " active" : "");
+  ["escalations","vpwatch","noise","analytics"].forEach(t => {
+    const el = document.getElementById(`tab-${t}`);
+    if (el) el.className = "tab" + (tab === t ? " active" : "");
   });
   document.getElementById("table-escalations").style.display = tab === "escalations" ? "block" : "none";
   document.getElementById("table-vpwatch").style.display      = tab === "vpwatch"     ? "block" : "none";
   document.getElementById("table-noise").style.display        = tab === "noise"       ? "block" : "none";
+  document.getElementById("panel-analytics").style.display    = tab === "analytics"   ? "block" : "none";
   document.getElementById("main-filter-bar").style.display    = tab === "escalations" ? "flex"  : "none";
 
-  if (tab === "noise")   fetchNoise();
-  if (tab === "vpwatch") fetchVpWatch();
+  if (tab === "noise")     fetchNoise();
+  if (tab === "vpwatch")   fetchVpWatch();
+  if (tab === "analytics") loadAnalytics();
 }
 
 // ── Stats Cards ───────────────────────────────────
 async function fetchStats() {
   try {
-    const res = await fetch(`${API_BASE}/api/stats`);
+    const res = await apiFetch(`${API_BASE}/api/stats`);
     if (!res.ok) return;
     const data = await res.json();
     document.getElementById("stat-total").textContent      = data.total        ?? 0;
@@ -51,9 +122,38 @@ async function fetchStats() {
     document.getElementById("stat-blocked").textContent    = data.blocked       ?? 0;
     document.getElementById("stat-closed").textContent     = data.closed_today  ?? 0;
     document.getElementById("stat-vp-watch").textContent   = data.vp_watch_count ?? 0;
+    renderNorthStar(data);
   } catch (e) {
     console.warn("[Stats] fetch failed:", e.message);
   }
+}
+
+// ── North Star Metric ─────────────────────────────
+function renderNorthStar(data) {
+  const rate = data.sla_resolution_rate;
+  const rateEl = document.getElementById("ns-rate");
+  const bar = document.getElementById("northstar-bar");
+
+  if (rate === null || rate === undefined) {
+    rateEl.textContent = "—";
+    bar.className = "northstar-bar ns-neutral";
+  } else {
+    rateEl.textContent = rate + "%";
+    if (rate >= 80)      bar.className = "northstar-bar ns-good";
+    else if (rate >= 60) bar.className = "northstar-bar ns-warn";
+    else                 bar.className = "northstar-bar ns-bad";
+  }
+
+  const avgH = data.avg_resolution_hours;
+  document.getElementById("ns-avg-hours").textContent =
+    avgH ? (avgH < 1 ? `${Math.round(avgH*60)}m` : `${avgH}h`) : "—";
+
+  document.getElementById("ns-total-closed").textContent = data.total_closed ?? 0;
+
+  const atRisk = data.escalations_at_risk ?? 0;
+  document.getElementById("ns-at-risk").textContent = atRisk;
+  const riskKpi = document.getElementById("ns-at-risk-kpi");
+  riskKpi.className = "northstar-kpi" + (atRisk > 0 ? " danger" : "");
 }
 
 // ── Filters → Fetch Escalations ───────────────────
@@ -90,7 +190,7 @@ async function fetchEscalations(params, channelFilter = "") {
   tbody.innerHTML = `<tr class="loading-row"><td colspan="13">Loading...</td></tr>`;
 
   try {
-    const res = await fetch(`${API_BASE}/api/escalations?${params.toString()}`);
+    const res = await apiFetch(`${API_BASE}/api/escalations?${params.toString()}`);
     const data = await res.json();
 
     let rows = data.escalations || [];
@@ -165,7 +265,7 @@ async function fetchVpWatch() {
   const tbody = document.getElementById("vpwatch-body");
   tbody.innerHTML = `<tr class="loading-row"><td colspan="11">Loading VP Watch cases...</td></tr>`;
   try {
-    const res = await fetch(`${API_BASE}/api/escalations?is_escalation=1&vp_watch=1&limit=100`);
+    const res = await apiFetch(`${API_BASE}/api/escalations?is_escalation=1&vp_watch=1&limit=100`);
     const data = await res.json();
     const rows = data.escalations || [];
 
@@ -223,7 +323,7 @@ function toggleWatch(id, currentValue) {
 
 async function toggleVpCheck(id, currentValue) {
   const newValue = currentValue === 1 ? 0 : 1;
-  await fetch(`${API_BASE}/api/escalations/${id}`, {
+  await apiFetch(`${API_BASE}/api/escalations/${id}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ vp_check: newValue }),
@@ -235,7 +335,7 @@ async function toggleVpCheck(id, currentValue) {
 }
 
 async function unwatchCase(id) {
-  await fetch(`${API_BASE}/api/escalations/${id}`, {
+  await apiFetch(`${API_BASE}/api/escalations/${id}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ vp_watch: 0, vp_urgency_override: "", vp_escalate_dept: "", vp_watch_note: "" }),
@@ -247,7 +347,7 @@ async function unwatchCase(id) {
 
 async function openVpWatchModal(id) {
   try {
-    const res = await fetch(`${API_BASE}/api/escalations/${id}`);
+    const res = await apiFetch(`${API_BASE}/api/escalations/${id}`);
     const r = await res.json();
     document.getElementById("vp-case-id").value = id;
     document.getElementById("vp-case-summary").innerHTML =
@@ -280,7 +380,7 @@ async function confirmVpWatch() {
   };
   if (dept) payload.vp_escalate_dept = dept;
 
-  await fetch(`${API_BASE}/api/escalations/${id}`, {
+  await apiFetch(`${API_BASE}/api/escalations/${id}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
@@ -297,7 +397,7 @@ async function fetchNoise() {
   const tbody = document.getElementById("noise-body");
   tbody.innerHTML = `<tr class="loading-row"><td colspan="6">Loading...</td></tr>`;
   try {
-    const res = await fetch(`${API_BASE}/api/escalations?is_escalation=0&limit=100`);
+    const res = await apiFetch(`${API_BASE}/api/escalations?is_escalation=0&limit=100`);
     const data = await res.json();
     const rows = data.escalations || [];
     if (rows.length === 0) {
@@ -321,7 +421,7 @@ async function fetchNoise() {
 async function openDrawer(id) {
   activeDrawerId = id;
   try {
-    const res = await fetch(`${API_BASE}/api/escalations/${id}`);
+    const res = await apiFetch(`${API_BASE}/api/escalations/${id}`);
     const r = await res.json();
 
     document.getElementById("drawer-account").textContent =
@@ -382,7 +482,7 @@ async function saveNotes() {
 // ── Update Field (owner / status / notes) ─────────
 async function updateField(id, field, value, doRefresh = true) {
   try {
-    await fetch(`${API_BASE}/api/escalations/${id}`, {
+    await apiFetch(`${API_BASE}/api/escalations/${id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ [field]: value }),
@@ -490,7 +590,7 @@ function closeSettings() {
 
 async function loadSourceStatus() {
   try {
-    const res = await fetch(`${API_BASE}/api/sources`);
+    const res = await apiFetch(`${API_BASE}/api/sources`);
     if (!res.ok) return;
     const data = await res.json();
     renderGmailChips(data.gmail || []);
@@ -569,7 +669,7 @@ async function testGmail() {
   if (!email || !pass) { showTestResult("gmail-test-result", false, "Enter email and App Password first."); return; }
   showTestResult("gmail-test-result", true, "Testing connection...");
   try {
-    const res = await fetch(`${API_BASE}/api/sources/test/gmail`, {
+    const res = await apiFetch(`${API_BASE}/api/sources/test/gmail`, {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ email, app_password: pass }),
     });
@@ -587,7 +687,7 @@ async function testSlack() {
   if (!token) { showTestResult("slack-test-result", false, "Enter a Bot Token first."); return; }
   showTestResult("slack-test-result", true, "Testing token...");
   try {
-    const res = await fetch(`${API_BASE}/api/sources/test/slack`, {
+    const res = await apiFetch(`${API_BASE}/api/sources/test/slack`, {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ bot_token: token }),
     });
@@ -605,7 +705,7 @@ async function connectGmail() {
   const pass  = document.getElementById("gmail-pass-input").value.trim();
   if (!email || !pass) { showTestResult("gmail-test-result", false, "Enter both Gmail address and App Password."); return; }
   try {
-    const res = await fetch(`${API_BASE}/api/sources/gmail`, {
+    const res = await apiFetch(`${API_BASE}/api/sources/gmail`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ email, app_password: pass }),
@@ -625,7 +725,7 @@ async function connectGmail() {
 
 async function disconnectGmail(email) {
   if (!confirm(`Remove ${email}?`)) return;
-  await fetch(`${API_BASE}/api/sources/gmail/${encodeURIComponent(email)}`, { method: "DELETE" });
+  await apiFetch(`${API_BASE}/api/sources/gmail/${encodeURIComponent(email)}`, { method: "DELETE" });
   loadSourceStatus();
 }
 
@@ -636,7 +736,7 @@ async function connectSlack() {
   if (!token) { showTestResult("slack-test-result", false, "Enter a Bot Token first."); return; }
   if (!channel) { showTestResult("slack-test-result", false, "Enter a Channel ID (e.g. C01234ABCD)."); return; }
   try {
-    const res = await fetch(`${API_BASE}/api/sources/slack`, {
+    const res = await apiFetch(`${API_BASE}/api/sources/slack`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ bot_token: token, channel_id: channel, channel_name: name || channel }),
@@ -654,7 +754,7 @@ async function connectSlack() {
 
 async function disconnectSlackChannel(channelId) {
   if (!confirm(`Remove channel ${channelId}?`)) return;
-  await fetch(`${API_BASE}/api/sources/slack/${channelId}`, { method: "DELETE" });
+  await apiFetch(`${API_BASE}/api/sources/slack/${channelId}`, { method: "DELETE" });
   loadSourceStatus();
 }
 
@@ -1097,7 +1197,7 @@ async function executeClears() {
       url = `${API_BASE}/api/escalations?scope=${encodeURIComponent(scope)}`;
     }
 
-    const res = await fetch(url, { method: "DELETE" });
+    const res = await apiFetch(url, { method: "DELETE" });
     if (!res.ok) {
       const err = await res.text();
       throw new Error(`Server error ${res.status}: ${err}`);
@@ -1125,4 +1225,355 @@ function showToast(msg) {
   toast.textContent = msg;
   toast.style.opacity = "1";
   setTimeout(() => { toast.style.opacity = "0"; }, 2500);
+}
+
+// ── Analytics / Charts ────────────────────────────
+let _charts = {};
+let _analyticsPluginsRegistered = false;
+
+function _registerChartPlugins() {
+  if (_analyticsPluginsRegistered) return;
+  _analyticsPluginsRegistered = true;
+
+  // Center-text plugin for doughnut charts
+  Chart.register({
+    id: "doughnutCenter",
+    afterDraw(chart) {
+      if (chart.config.type !== "doughnut") return;
+      const meta = chart.getDatasetMeta(0);
+      if (!meta || !meta.data || meta.data.length === 0) return;
+      const { ctx } = chart;
+      const cx = meta.data[0].x;
+      const cy = meta.data[0].y;
+      const total = chart.data.datasets[0].data.reduce((a, b) => a + (b || 0), 0);
+      ctx.save();
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.font = "bold 24px Inter, Segoe UI, sans-serif";
+      ctx.fillStyle = "#1a1a2e";
+      ctx.fillText(total, cx, cy - 10);
+      ctx.font = "11px Inter, Segoe UI, sans-serif";
+      ctx.fillStyle = "#9ca3af";
+      ctx.fillText("total", cx, cy + 12);
+      ctx.restore();
+    },
+  });
+}
+
+function _destroyChart(id) {
+  if (_charts[id]) { _charts[id].destroy(); delete _charts[id]; }
+}
+
+function _setBadge(id, text) {
+  const el = document.getElementById(id);
+  if (el) el.textContent = text;
+}
+
+function _makeGradient(canvas, hex, opacity = 0.45) {
+  const ctx = canvas.getContext("2d");
+  const grad = ctx.createLinearGradient(0, 0, 0, canvas.offsetHeight || 220);
+  const r = parseInt(hex.slice(1,3),16), g = parseInt(hex.slice(3,5),16), b = parseInt(hex.slice(5,7),16);
+  grad.addColorStop(0, `rgba(${r},${g},${b},${opacity})`);
+  grad.addColorStop(1, `rgba(${r},${g},${b},0)`);
+  return grad;
+}
+
+const _TOOLTIP_DEFAULTS = {
+  backgroundColor: "rgba(15,23,42,0.92)",
+  titleColor: "#f8fafc",
+  bodyColor: "#cbd5e1",
+  padding: 10,
+  cornerRadius: 8,
+  borderColor: "rgba(255,255,255,0.08)",
+  borderWidth: 1,
+  displayColors: true,
+  boxWidth: 10,
+  boxHeight: 10,
+};
+
+async function loadAnalytics() {
+  _registerChartPlugins();
+  try {
+    const [statsRes, trendRes] = await Promise.all([
+      apiFetch(`${API_BASE}/api/stats`),
+      apiFetch(`${API_BASE}/api/stats/trend?days=7`),
+    ]);
+    const stats = await statsRes.json();
+    const trend = await trendRes.json();
+
+    renderAnalyticsSummary(stats);
+    renderDeptChart(stats.by_department || {});
+    renderUrgencyChart(stats.by_urgency || {});
+    renderChannelChart(stats.by_channel || {});
+    renderStatusChart(stats.by_status || {});
+    renderTrendChart(trend.days || []);
+  } catch(e) {
+    console.error("[Analytics] failed:", e.message);
+  }
+}
+
+function renderAnalyticsSummary(stats) {
+  const bar = document.getElementById("analytics-summary-row");
+  if (!bar) return;
+  const total = stats.total || 0;
+  const high  = stats.high_priority || 0;
+  const sla   = stats.sla_breached || 0;
+  const closed = stats.closed_today || 0;
+  bar.innerHTML = `
+    <div class="asummary-item">
+      <span class="asummary-val">${total}</span>
+      <span class="asummary-label">Total Escalations</span>
+    </div>
+    <div class="asummary-item red">
+      <span class="asummary-val">${high}</span>
+      <span class="asummary-label">High Priority</span>
+    </div>
+    <div class="asummary-item orange">
+      <span class="asummary-val">${sla}</span>
+      <span class="asummary-label">SLA Breached</span>
+    </div>
+    <div class="asummary-item green">
+      <span class="asummary-val">${closed}</span>
+      <span class="asummary-label">Closed Today</span>
+    </div>
+    ${stats.sla_resolution_rate != null ? `
+    <div class="asummary-item blue">
+      <span class="asummary-val">${stats.sla_resolution_rate}%</span>
+      <span class="asummary-label">SLA Resolution Rate</span>
+    </div>` : ""}
+  `;
+}
+
+function renderDeptChart(byDept) {
+  _destroyChart("dept");
+  const labels = Object.keys(byDept);
+  const values = Object.values(byDept);
+  const total  = values.reduce((a, b) => a + b, 0);
+  const colors = ["#3b82f6","#8b5cf6","#ec4899","#f97316","#22c55e","#06b6d4","#f59e0b","#ef4444","#64748b"];
+  _setBadge("cbadge-dept", `${total} total`);
+  const ctx = document.getElementById("chart-dept");
+  if (!ctx) return;
+  _charts["dept"] = new Chart(ctx, {
+    type: "doughnut",
+    data: {
+      labels,
+      datasets: [{
+        data: values,
+        backgroundColor: colors.slice(0, labels.length),
+        borderWidth: 3,
+        borderColor: "#fff",
+        hoverOffset: 6,
+      }],
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      cutout: "66%",
+      animation: { animateRotate: true, duration: 700 },
+      plugins: {
+        tooltip: { ..._TOOLTIP_DEFAULTS, callbacks: {
+          label: ctx => ` ${ctx.label}: ${ctx.parsed} (${Math.round(ctx.parsed/total*100)}%)`,
+        }},
+        legend: { position: "right", labels: { boxWidth: 10, boxHeight: 10, padding: 10, font: { size: 11 } } },
+      },
+    },
+  });
+}
+
+function renderUrgencyChart(byUrgency) {
+  _destroyChart("urgency");
+  const order = ["High","Medium","Low"];
+  const labels = order.filter(k => byUrgency[k] != null);
+  const values = labels.map(k => byUrgency[k]);
+  const total  = values.reduce((a, b) => a + b, 0);
+  const COLORS = { High: "#ef4444", Medium: "#f97316", Low: "#22c55e" };
+  _setBadge("cbadge-urgency", `${total} total`);
+  const ctx = document.getElementById("chart-urgency");
+  if (!ctx) return;
+  _charts["urgency"] = new Chart(ctx, {
+    type: "doughnut",
+    data: {
+      labels,
+      datasets: [{
+        data: values,
+        backgroundColor: labels.map(l => COLORS[l]),
+        borderWidth: 3,
+        borderColor: "#fff",
+        hoverOffset: 6,
+      }],
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      cutout: "66%",
+      animation: { animateRotate: true, duration: 700 },
+      plugins: {
+        tooltip: { ..._TOOLTIP_DEFAULTS, callbacks: {
+          label: ctx => ` ${ctx.label}: ${ctx.parsed} (${Math.round(ctx.parsed/total*100)}%)`,
+        }},
+        legend: { position: "right", labels: { boxWidth: 10, boxHeight: 10, padding: 12, font: { size: 12 }, generateLabels: chart => {
+          const ds = chart.data.datasets[0];
+          return chart.data.labels.map((label, i) => ({
+            text: `${label}  ${ds.data[i]}`,
+            fillStyle: ds.backgroundColor[i],
+            strokeStyle: "#fff",
+            lineWidth: 2,
+            index: i,
+          }));
+        }}},
+      },
+    },
+  });
+}
+
+function renderChannelChart(byChannel) {
+  _destroyChart("channel");
+  const CH_COLORS = { gmail: "#f59e0b", slack: "#8b5cf6", whatsapp: "#22c55e" };
+  const CH_BG     = { gmail: "#fef3c7", slack: "#ede9fe", whatsapp: "#dcfce7" };
+  const labels = Object.keys(byChannel);
+  const values = Object.values(byChannel);
+  const total  = values.reduce((a, b) => a + b, 0);
+  _setBadge("cbadge-channel", `${total} messages`);
+  const ctx = document.getElementById("chart-channel");
+  if (!ctx) return;
+  _charts["channel"] = new Chart(ctx, {
+    type: "bar",
+    data: {
+      labels: labels.map(l => l.charAt(0).toUpperCase() + l.slice(1)),
+      datasets: [{
+        label: "Messages",
+        data: values,
+        backgroundColor: labels.map(l => CH_BG[l] || "#e0f2fe"),
+        borderColor: labels.map(l => CH_COLORS[l] || "#0284c7"),
+        borderWidth: 2,
+        borderRadius: 10,
+        borderSkipped: false,
+      }],
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      animation: { duration: 600 },
+      plugins: {
+        legend: { display: false },
+        tooltip: { ..._TOOLTIP_DEFAULTS, callbacks: {
+          label: ctx => ` ${ctx.parsed.y} messages (${Math.round(ctx.parsed.y/total*100)}%)`,
+        }},
+      },
+      scales: {
+        x: { grid: { display: false }, ticks: { font: { size: 12, weight: "600" } } },
+        y: { beginAtZero: true, grid: { color: "#f1f5f9" }, ticks: { stepSize: 1, font: { size: 11 } } },
+      },
+    },
+  });
+}
+
+function renderStatusChart(byStatus) {
+  _destroyChart("status");
+  const order = ["Open","In Progress","Blocked","Closed"];
+  const labels = order.filter(k => byStatus[k] != null);
+  const values = labels.map(k => byStatus[k] || 0);
+  const total  = values.reduce((a, b) => a + b, 0);
+  const ST_COLORS = { Open: "#3b82f6", "In Progress": "#f59e0b", Blocked: "#ec4899", Closed: "#22c55e" };
+  _setBadge("cbadge-status", `${total} total`);
+  const ctx = document.getElementById("chart-status");
+  if (!ctx) return;
+  _charts["status"] = new Chart(ctx, {
+    type: "bar",
+    data: {
+      labels,
+      datasets: [{
+        label: "Cases",
+        data: values,
+        backgroundColor: labels.map(l => ST_COLORS[l] + "28"),
+        borderColor: labels.map(l => ST_COLORS[l]),
+        borderWidth: 2,
+        borderRadius: 10,
+        borderSkipped: false,
+      }],
+    },
+    options: {
+      indexAxis: "y",
+      responsive: true, maintainAspectRatio: false,
+      animation: { duration: 600 },
+      plugins: {
+        legend: { display: false },
+        tooltip: { ..._TOOLTIP_DEFAULTS, callbacks: {
+          label: ctx => ` ${ctx.parsed.x} cases (${Math.round(ctx.parsed.x/total*100)}%)`,
+        }},
+      },
+      scales: {
+        x: { beginAtZero: true, grid: { color: "#f1f5f9" }, ticks: { stepSize: 1, font: { size: 11 } } },
+        y: { grid: { display: false }, ticks: { font: { size: 12, weight: "600" } } },
+      },
+    },
+  });
+}
+
+function renderTrendChart(days) {
+  _destroyChart("trend");
+  const ctx = document.getElementById("chart-trend");
+  if (!ctx) return;
+
+  const labels  = days.map(d => new Date(d.date + "T00:00:00")
+    .toLocaleDateString("en-IN", { day: "2-digit", month: "short" }));
+  const totals  = days.map(d => d.total  || 0);
+  const highs   = days.map(d => d.high   || 0);
+  const closeds = days.map(d => d.closed || 0);
+  const peak    = Math.max(...totals, 1);
+
+  _setBadge("cbadge-trend", `peak: ${peak}`);
+
+  const gTotal  = _makeGradient(ctx, "#3b82f6", 0.35);
+  const gHigh   = _makeGradient(ctx, "#ef4444", 0.22);
+  const gClosed = _makeGradient(ctx, "#22c55e", 0.22);
+
+  _charts["trend"] = new Chart(ctx, {
+    type: "line",
+    data: {
+      labels,
+      datasets: [
+        {
+          label: "Total",
+          data: totals,
+          borderColor: "#3b82f6",
+          backgroundColor: gTotal,
+          fill: true, tension: 0.4,
+          pointRadius: 5, pointBackgroundColor: "#3b82f6",
+          pointHoverRadius: 7, borderWidth: 2.5,
+        },
+        {
+          label: "High Urgency",
+          data: highs,
+          borderColor: "#ef4444",
+          backgroundColor: gHigh,
+          fill: true, tension: 0.4,
+          pointRadius: 4, pointBackgroundColor: "#ef4444",
+          pointHoverRadius: 6, borderWidth: 2,
+        },
+        {
+          label: "Closed",
+          data: closeds,
+          borderColor: "#22c55e",
+          backgroundColor: gClosed,
+          fill: true, tension: 0.4,
+          pointRadius: 4, pointBackgroundColor: "#22c55e",
+          pointHoverRadius: 6, borderWidth: 2,
+        },
+      ],
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: "index", intersect: false },
+      animation: { duration: 800 },
+      plugins: {
+        tooltip: { ..._TOOLTIP_DEFAULTS },
+        legend: {
+          position: "top",
+          labels: { boxWidth: 10, boxHeight: 10, padding: 16, font: { size: 12 }, usePointStyle: true, pointStyle: "circle" },
+        },
+      },
+      scales: {
+        x: { grid: { display: false }, ticks: { font: { size: 11 } } },
+        y: { beginAtZero: true, grid: { color: "#f1f5f9" }, ticks: { stepSize: 1, font: { size: 11 } } },
+      },
+    },
+  });
 }

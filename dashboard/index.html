@@ -8,6 +8,27 @@
 </head>
 <body>
 
+<!-- ── Login Overlay ───────────────────────────── -->
+<div class="login-overlay" id="login-overlay">
+  <div class="login-card">
+    <div class="login-logo">🏥</div>
+    <h2 class="login-title">Plum Escalation Center</h2>
+    <p class="login-sub">Sign in to access the dashboard</p>
+    <div id="login-error" class="login-error" style="display:none;"></div>
+    <form class="login-form" onsubmit="doLogin(event)">
+      <div class="login-field">
+        <label>Username</label>
+        <input type="text" id="login-username" placeholder="admin" autocomplete="username" required />
+      </div>
+      <div class="login-field">
+        <label>Password</label>
+        <input type="password" id="login-password" placeholder="••••••••" autocomplete="current-password" required />
+      </div>
+      <button type="submit" class="login-btn" id="login-btn">Sign In →</button>
+    </form>
+  </div>
+</div>
+
 <!-- ── Header ──────────────────────────────────── -->
 <header class="header">
   <div class="header-left">
@@ -21,6 +42,7 @@
     <button class="btn-refresh" onclick="refreshAll()">↻ Refresh</button>
     <button class="btn-export" onclick="exportCSV()">⬇ Export CSV</button>
     <button class="btn-clear" onclick="openClearModal()">🗑 Clear Data</button>
+    <button class="btn-logout" onclick="doLogout()" title="Sign out">⎋ Logout</button>
   </div>
 </header>
 
@@ -115,11 +137,34 @@
   </div>
 </div>
 
+<!-- ── North Star Metric ────────────────────────── -->
+<div class="northstar-bar" id="northstar-bar">
+  <div class="northstar-main">
+    <div class="northstar-label">⭐ SLA Resolution Rate</div>
+    <div class="northstar-value" id="ns-rate">—</div>
+    <div class="northstar-desc">Cases closed before SLA deadline</div>
+  </div>
+  <div class="northstar-divider"></div>
+  <div class="northstar-kpi">
+    <div class="northstar-kpi-label">Avg Resolution Time</div>
+    <div class="northstar-kpi-value" id="ns-avg-hours">—</div>
+  </div>
+  <div class="northstar-kpi">
+    <div class="northstar-kpi-label">Total Closed</div>
+    <div class="northstar-kpi-value" id="ns-total-closed">—</div>
+  </div>
+  <div class="northstar-kpi danger" id="ns-at-risk-kpi">
+    <div class="northstar-kpi-label">⚠ SLA At Risk (2h)</div>
+    <div class="northstar-kpi-value" id="ns-at-risk">—</div>
+  </div>
+</div>
+
 <!-- ── Tabs ─────────────────────────────────────── -->
 <div class="tabs" style="margin-top:20px;">
   <div class="tab active" id="tab-escalations" onclick="switchTab('escalations')">📋 Escalations</div>
   <div class="tab" id="tab-vpwatch" onclick="switchTab('vpwatch')">👁 VP Watch</div>
   <div class="tab" id="tab-noise" onclick="switchTab('noise')">🔕 Non-Escalations Log</div>
+  <div class="tab" id="tab-analytics" onclick="switchTab('analytics')">📊 Analytics</div>
 </div>
 
 <!-- ── Filter Bar ───────────────────────────────── -->
@@ -476,6 +521,62 @@
   </div>
 </div>
 
+<!-- ── Analytics Panel ──────────────────────────── -->
+<div id="panel-analytics" style="display:none; padding:0 28px 28px;">
+
+  <!-- Summary pills -->
+  <div class="analytics-summary-row" id="analytics-summary-row"></div>
+
+  <!-- Row 1: 2 donuts -->
+  <div class="charts-grid-2">
+    <div class="chart-card">
+      <div class="chart-card-header">
+        <span class="chart-title">🏢 By Department</span>
+        <span class="chart-badge" id="cbadge-dept">—</span>
+      </div>
+      <div class="chart-wrap"><canvas id="chart-dept"></canvas></div>
+    </div>
+    <div class="chart-card">
+      <div class="chart-card-header">
+        <span class="chart-title">🔴 By Urgency</span>
+        <span class="chart-badge" id="cbadge-urgency">—</span>
+      </div>
+      <div class="chart-wrap"><canvas id="chart-urgency"></canvas></div>
+    </div>
+  </div>
+
+  <!-- Row 2: channel bar + status bar -->
+  <div class="charts-grid-2" style="margin-top:18px;">
+    <div class="chart-card">
+      <div class="chart-card-header">
+        <span class="chart-title">📨 By Channel</span>
+        <span class="chart-badge" id="cbadge-channel">—</span>
+      </div>
+      <div class="chart-wrap"><canvas id="chart-channel"></canvas></div>
+    </div>
+    <div class="chart-card">
+      <div class="chart-card-header">
+        <span class="chart-title">📋 By Status</span>
+        <span class="chart-badge" id="cbadge-status">—</span>
+      </div>
+      <div class="chart-wrap"><canvas id="chart-status"></canvas></div>
+    </div>
+  </div>
+
+  <!-- Row 3: trend full-width -->
+  <div style="margin-top:18px;">
+    <div class="chart-card">
+      <div class="chart-card-header">
+        <span class="chart-title">📈 7-Day Escalation Trend</span>
+        <span class="chart-badge" id="cbadge-trend">Last 7 days</span>
+      </div>
+      <div class="chart-wrap chart-wrap-trend"><canvas id="chart-trend"></canvas></div>
+    </div>
+  </div>
+
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
 <script src="app.js"></script>
 </body>
 </html>
