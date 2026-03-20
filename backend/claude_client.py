@@ -89,14 +89,101 @@ def enrich(source_channel: str, sender_name: str, sender_contact: str, raw_messa
         return result
 
     except Exception as e:
-        print(f"[Claude] Error: {e}. Using safe defaults.")
-        return {
-            "is_escalation": 1,
-            "account_name": "Unknown",
-            "issue_category": "Other",
-            "ai_summary": raw_message[:200],
-            "urgency": "Medium",
-            "priority_score": 5,
-            "action_needed": "Review manually — AI enrichment failed",
-            "sentiment": "Neutral",
-        }
+        print(f"[Claude] Error: {e}. Using keyword-based fallback.")
+        return _keyword_fallback(raw_message)
+
+
+def _keyword_fallback(raw_message: str) -> dict:
+    """
+    Keyword-based classification when Claude AI is unavailable.
+    Detects urgency, sentiment, and issue category from message content.
+    """
+    msg = raw_message.lower()
+
+    # ── Urgency detection ──────────────────────────────────────
+    HIGH_URGENCY = [
+        "irdai", "legal action", "consumer court", "will sue", "lawsuit",
+        "ombudsman", "cashless denied", "cashless rejection", "medical emergency",
+        "icu", "critical condition", "death", "died", "urgent", "immediate",
+        "24 hours", "today itself", "escalate now", "social media", "tweet",
+        "going viral", "police", "fir", "non-renewal", "policy lapse"
+    ]
+    LOW_URGENCY = [
+        "training", "how to", "general inquiry", "just wanted to know",
+        "my brother", "my friend", "referral", "share the link"
+    ]
+
+    if any(k in msg for k in HIGH_URGENCY):
+        urgency = "High"
+        priority_score = 8
+    elif any(k in msg for k in LOW_URGENCY):
+        urgency = "Low"
+        priority_score = 2
+    else:
+        urgency = "Medium"
+        priority_score = 5
+
+    # ── Sentiment detection ────────────────────────────────────
+    THREATENING = [
+        "legal action", "irdai", "consumer court", "will sue", "ombudsman",
+        "social media", "tweet", "post online", "board escalation", "police", "fir"
+    ]
+    FRUSTRATED = [
+        "no response", "not resolved", "waiting since", "follow up", "3 weeks",
+        "2 weeks", "month ago", "unacceptable", "disappointed", "disgusted",
+        "pathetic", "worst", "useless", "terrible", "horrible", "fed up",
+        "still no", "despite", "again and again", "multiple times"
+    ]
+
+    if any(k in msg for k in THREATENING):
+        sentiment = "Threatening"
+        priority_score = min(10, priority_score + 2)
+    elif any(k in msg for k in FRUSTRATED):
+        sentiment = "Frustrated"
+        priority_score = min(10, priority_score + 1)
+    else:
+        sentiment = "Neutral"
+
+    # ── Issue category detection ───────────────────────────────
+    if any(k in msg for k in ["claim", "reimbursement", "tpa", "claim rejected"]):
+        issue_category = "Claim Processing"
+    elif any(k in msg for k in ["cashless", "hospital", "pre-auth", "admission"]):
+        issue_category = "Cashless Facility"
+    elif any(k in msg for k in ["irdai", "legal", "court", "sue"]):
+        issue_category = "IRDAI/Legal Threat"
+    elif any(k in msg for k in ["renew", "renewal", "policy lapse", "expir"]):
+        issue_category = "Policy Renewal"
+    elif any(k in msg for k in ["health id", "abha", "id card"]):
+        issue_category = "Health ID"
+    elif any(k in msg for k in ["document", "upload", "kyc", "form"]):
+        issue_category = "Document Upload"
+    elif any(k in msg for k in ["social media", "tweet", "facebook", "post"]):
+        issue_category = "Social Media Threat"
+    elif any(k in msg for k in ["training", "how to", "guide", "help"]):
+        issue_category = "Training Request"
+    else:
+        issue_category = "Other"
+
+    # ── is_escalation detection ────────────────────────────────
+    NON_ESCALATION = [
+        "my brother wants", "my friend wants", "referral", "share the app",
+        "download link", "just asking", "general question"
+    ]
+    is_escalation = 0 if any(k in msg for k in NON_ESCALATION) else 1
+
+    action_map = {
+        "High": "URGENT: Contact customer within 1 hour and escalate to department head",
+        "Medium": "Assign to relevant team and respond within 24 hours",
+        "Low": "Route to standard support queue",
+    }
+
+    return {
+        "is_escalation": is_escalation,
+        "account_name": "Unknown",
+        "issue_category": issue_category,
+        "ai_summary": f"[Auto-classified] {raw_message[:200]}",
+        "urgency": urgency,
+        "priority_score": priority_score,
+        "action_needed": action_map[urgency],
+        "sentiment": sentiment,
+    }
