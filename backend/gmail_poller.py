@@ -18,7 +18,8 @@ import os
 import sources_config
 
 
-API_BASE = "http://localhost:8000"
+_PORT = os.environ.get("PORT", "8000")
+API_BASE = f"http://localhost:{_PORT}"
 POLL_INTERVAL = 120  # seconds
 
 

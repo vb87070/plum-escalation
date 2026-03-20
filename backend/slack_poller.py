@@ -16,7 +16,9 @@ import httpx
 
 import sources_config
 
-API_BASE = "http://localhost:8000"
+import os
+_PORT = os.environ.get("PORT", "8000")
+API_BASE = f"http://localhost:{_PORT}"
 POLL_INTERVAL = 30  # seconds
 
 
