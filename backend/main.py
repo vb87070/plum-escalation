@@ -85,7 +85,7 @@ def ingest(msg: InboundMessage):
 
     # 2. Complaint router — department routing (hybrid rule + AI)
     routing = complaint_router.route_complaint(msg.raw_message, use_ai=True)
-    dept_info = get_department(routing["primary_dept_id"])
+    dept_info = get_department(routing["primary_department"]["id"])
     assigned_department = dept_info["name"]
 
     # 3. SLA deadline — use routing dept SLA hours as primary source
@@ -129,11 +129,11 @@ def ingest(msg: InboundMessage):
         enriched["sentiment"],
         assigned_department,
         sla_deadline,
-        routing["primary_dept_id"],
-        _json.dumps(routing.get("secondary_dept_ids", [])),
+        routing["primary_department"]["id"],
+        _json.dumps([d["id"] for d in routing.get("secondary_departments", [])]),
         routing.get("confidence_score", 0),
-        routing.get("routing_label", ""),
-        routing.get("reasoning", ""),
+        routing.get("routing_decision", ""),
+        routing.get("routing_reasoning", ""),
         routing.get("routing_method", "rule"),
         _json.dumps(routing.get("tags", [])),
         _json.dumps(routing.get("red_flags", [])),
@@ -152,7 +152,7 @@ def ingest(msg: InboundMessage):
         "priority_score": enriched["priority_score"],
         "account_name": enriched["account_name"],
         "department": assigned_department,
-        "routing_method": routing.get("routing_method", "rule"),
+        "routing_method": routing.get("routing_method", "rule_based"),
     }
 
 
