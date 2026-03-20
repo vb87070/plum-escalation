@@ -7,9 +7,7 @@
           "item": [{ "mode": "everyMinute" }]
         },
         "filters": {},
-        "options": {
-          "dataPropertyAttachmentsPrefixName": ""
-        }
+        "options": {}
       },
       "id": "gmail-trigger-node",
       "name": "Gmail Trigger",
@@ -34,11 +32,8 @@
           ]
         },
         "sendBody": true,
-        "bodyParameters": {
-          "parameters": []
-        },
         "specifyBody": "json",
-        "jsonBody": "={\n  \"source_channel\": \"gmail\",\n  \"source_message_id\": \"{{ $json.id }}\",\n  \"received_at\": \"{{ $json.date }}\",\n  \"sender_name\": \"{{ $json.from && $json.from.name ? $json.from.name : ($json.from && $json.from.value && $json.from.value[0] ? $json.from.value[0].address.split('@')[0] : 'Unknown') }}\",\n  \"sender_contact\": \"{{ $json.from && $json.from.value && $json.from.value[0] ? $json.from.value[0].address : '' }}\",\n  \"raw_message\": \"{{ ($json.subject ? 'Subject: ' + $json.subject + '\\\\n\\\\n' : '') + ($json.text || $json.snippet || '') }}\"\n}",
+        "jsonBody": "={\n  \"source_channel\": \"gmail\",\n  \"source_message_id\": \"{{ $json.id || $json.messageId || 'gmail-' + Date.now() }}\",\n  \"received_at\": \"{{ $json.date || $json.internalDate || new Date().toISOString() }}\",\n  \"sender_name\": \"{{ ($json.from || '').replace(/<.*>/, '').trim() || 'Unknown' }}\",\n  \"sender_contact\": \"{{ (($json.from || '').match(/<(.+)>/) || [])[1] || $json.from || '' }}\",\n  \"raw_message\": \"{{ 'Subject: ' + ($json.subject || '(no subject)') + '\\\\n\\\\n' + ($json.text || $json.snippet || $json.body || '') }}\"\n}",
         "options": {
           "response": {
             "response": {
