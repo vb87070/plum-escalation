@@ -165,6 +165,7 @@
   <div class="tab" id="tab-vpwatch" onclick="switchTab('vpwatch')">👁 VP Watch</div>
   <div class="tab" id="tab-noise" onclick="switchTab('noise')">🔕 Non-Escalations Log</div>
   <div class="tab" id="tab-analytics" onclick="switchTab('analytics')">📊 Analytics</div>
+  <div class="tab" id="tab-interactive" onclick="switchTab('interactive')">✨ Interactive Charts</div>
 </div>
 
 <!-- ── Filter Bar ───────────────────────────────── -->
@@ -571,6 +572,116 @@
         <span class="chart-badge" id="cbadge-trend">Last 7 days</span>
       </div>
       <div class="chart-wrap chart-wrap-trend"><canvas id="chart-trend"></canvas></div>
+    </div>
+  </div>
+
+</div>
+
+<!-- ── Interactive Charts Panel ───────────────────── -->
+<div id="panel-interactive" style="display:none; padding:0 28px 28px;">
+
+  <!-- Controls bar -->
+  <div class="ic-controls-bar">
+    <div class="ic-controls-left">
+      <span class="ic-section-title">✨ Interactive Analytics</span>
+      <span class="ic-subtitle">Click charts to drill down · toggle views · change ranges</span>
+    </div>
+    <div class="ic-controls-right">
+      <div class="ic-range-group">
+        <button class="ic-range-btn active" id="icrange-7"  onclick="setIcRange(7)">7d</button>
+        <button class="ic-range-btn"        id="icrange-14" onclick="setIcRange(14)">14d</button>
+        <button class="ic-range-btn"        id="icrange-30" onclick="setIcRange(30)">30d</button>
+      </div>
+      <button class="ic-refresh-btn" onclick="loadInteractive()">↻ Refresh</button>
+    </div>
+  </div>
+
+  <!-- KPI Gauges Row -->
+  <div class="ic-kpi-row" id="ic-kpi-row"></div>
+
+  <!-- Row 1: SLA Gauge + Priority Distribution -->
+  <div class="ic-grid-2">
+    <div class="chart-card">
+      <div class="chart-card-header">
+        <span class="chart-title">🎯 SLA Performance Gauge</span>
+        <span class="chart-badge" id="ic-badge-sla">—</span>
+      </div>
+      <div class="ic-gauge-wrap">
+        <canvas id="ic-chart-sla-gauge"></canvas>
+        <div class="ic-gauge-center" id="ic-gauge-center">
+          <div class="ic-gauge-pct" id="ic-gauge-pct">—</div>
+          <div class="ic-gauge-label">SLA Rate</div>
+        </div>
+      </div>
+    </div>
+    <div class="chart-card">
+      <div class="chart-card-header">
+        <span class="chart-title">📊 Priority Score Distribution</span>
+        <span class="chart-badge" id="ic-badge-score">—</span>
+      </div>
+      <div class="chart-wrap"><canvas id="ic-chart-score-dist"></canvas></div>
+    </div>
+  </div>
+
+  <!-- Row 2: Dept Performance + Channel×Status stacked -->
+  <div class="ic-grid-2" style="margin-top:18px;">
+    <div class="chart-card">
+      <div class="chart-card-header">
+        <span class="chart-title">🏢 Dept Resolution Performance</span>
+        <span class="chart-badge" id="ic-badge-dept-perf">click to drill down</span>
+      </div>
+      <div class="chart-wrap chart-wrap-tall"><canvas id="ic-chart-dept-perf"></canvas></div>
+    </div>
+    <div class="chart-card">
+      <div class="chart-card-header">
+        <span class="chart-title">📨 Channel × Status Breakdown</span>
+        <span class="chart-badge" id="ic-badge-ch-status">—</span>
+      </div>
+      <div class="chart-wrap chart-wrap-tall"><canvas id="ic-chart-ch-status"></canvas></div>
+    </div>
+  </div>
+
+  <!-- Row 3: Scatter plot + Heatmap (arrival by hour) -->
+  <div class="ic-grid-2" style="margin-top:18px;">
+    <div class="chart-card">
+      <div class="chart-card-header">
+        <span class="chart-title">⏱ Priority vs Resolution Time</span>
+        <span class="chart-badge" id="ic-badge-scatter">closed cases</span>
+      </div>
+      <div class="chart-wrap"><canvas id="ic-chart-scatter"></canvas></div>
+    </div>
+    <div class="chart-card">
+      <div class="chart-card-header">
+        <span class="chart-title">🕐 Arrival Heatmap (Hour of Day)</span>
+        <span class="chart-badge" id="ic-badge-heatmap">—</span>
+      </div>
+      <div class="chart-wrap"><canvas id="ic-chart-heatmap"></canvas></div>
+    </div>
+  </div>
+
+  <!-- Row 4: Extended trend full width -->
+  <div style="margin-top:18px;">
+    <div class="chart-card">
+      <div class="chart-card-header">
+        <span class="chart-title">📈 Extended Trend</span>
+        <div style="display:flex;gap:6px;align-items:center;">
+          <button class="ic-toggle-btn active" id="ict-line" onclick="setTrendType('line')">Line</button>
+          <button class="ic-toggle-btn"        id="ict-bar"  onclick="setTrendType('bar')">Bar</button>
+          <span class="chart-badge" id="ic-badge-trend">—</span>
+        </div>
+      </div>
+      <div class="chart-wrap chart-wrap-trend"><canvas id="ic-chart-trend"></canvas></div>
+    </div>
+  </div>
+
+  <!-- Drill-down drawer (shown inline below) -->
+  <div id="ic-drilldown" style="display:none; margin-top:18px;">
+    <div class="chart-card ic-drilldown-card">
+      <div class="chart-card-header">
+        <span class="chart-title" id="ic-dd-title">Department Detail</span>
+        <button class="ic-close-dd" onclick="closeIcDrilldown()">✕ Close</button>
+      </div>
+      <div class="ic-dd-grid" id="ic-dd-grid"></div>
     </div>
   </div>
 

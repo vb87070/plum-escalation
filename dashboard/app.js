@@ -87,27 +87,30 @@ function startAutoRefresh() {
 function refreshAll() {
   fetchStats();
   if (currentTab === "escalations") applyFilters();
-  else if (currentTab === "vpwatch")  fetchVpWatch();
-  else if (currentTab === "analytics") loadAnalytics();
+  else if (currentTab === "vpwatch")    fetchVpWatch();
+  else if (currentTab === "analytics")  loadAnalytics();
+  else if (currentTab === "interactive") loadInteractive();
   else fetchNoise();
 }
 
 // ── Tab switching ─────────────────────────────────
 function switchTab(tab) {
   currentTab = tab;
-  ["escalations","vpwatch","noise","analytics"].forEach(t => {
+  ["escalations","vpwatch","noise","analytics","interactive"].forEach(t => {
     const el = document.getElementById(`tab-${t}`);
     if (el) el.className = "tab" + (tab === t ? " active" : "");
   });
-  document.getElementById("table-escalations").style.display = tab === "escalations" ? "block" : "none";
-  document.getElementById("table-vpwatch").style.display      = tab === "vpwatch"     ? "block" : "none";
-  document.getElementById("table-noise").style.display        = tab === "noise"       ? "block" : "none";
-  document.getElementById("panel-analytics").style.display    = tab === "analytics"   ? "block" : "none";
-  document.getElementById("main-filter-bar").style.display    = tab === "escalations" ? "flex"  : "none";
+  document.getElementById("table-escalations").style.display  = tab === "escalations"  ? "block" : "none";
+  document.getElementById("table-vpwatch").style.display       = tab === "vpwatch"      ? "block" : "none";
+  document.getElementById("table-noise").style.display         = tab === "noise"        ? "block" : "none";
+  document.getElementById("panel-analytics").style.display     = tab === "analytics"    ? "block" : "none";
+  document.getElementById("panel-interactive").style.display   = tab === "interactive"  ? "block" : "none";
+  document.getElementById("main-filter-bar").style.display     = tab === "escalations"  ? "flex"  : "none";
 
-  if (tab === "noise")     fetchNoise();
-  if (tab === "vpwatch")   fetchVpWatch();
-  if (tab === "analytics") loadAnalytics();
+  if (tab === "noise")        fetchNoise();
+  if (tab === "vpwatch")      fetchVpWatch();
+  if (tab === "analytics")    loadAnalytics();
+  if (tab === "interactive")  loadInteractive();
 }
 
 // ── Stats Cards ───────────────────────────────────
@@ -1576,4 +1579,499 @@ function renderTrendChart(days) {
       },
     },
   });
+}
+
+// ═══════════════════════════════════════════════════════════
+// ── Interactive Charts ──────────────────────────────────────
+// ═══════════════════════════════════════════════════════════
+
+let _icCharts   = {};
+let _icRange    = 7;
+let _icTrendType = "line";
+let _icEscalations = [];
+
+function _destroyIcChart(id) {
+  if (_icCharts[id]) { _icCharts[id].destroy(); delete _icCharts[id]; }
+}
+
+function setIcRange(days) {
+  _icRange = days;
+  [7,14,30].forEach(d => {
+    const btn = document.getElementById(`icrange-${d}`);
+    if (btn) btn.className = "ic-range-btn" + (d === days ? " active" : "");
+  });
+  loadInteractive();
+}
+
+function setTrendType(type) {
+  _icTrendType = type;
+  ["line","bar"].forEach(t => {
+    const btn = document.getElementById(`ict-${t}`);
+    if (btn) btn.className = "ic-toggle-btn" + (t === type ? " active" : "");
+  });
+  _renderIcTrend(_icTrendData);
+}
+
+let _icTrendData = [];
+
+async function loadInteractive() {
+  _registerChartPlugins();
+  try {
+    const [statsRes, escalRes, trendRes] = await Promise.all([
+      apiFetch(`${API_BASE}/api/stats`),
+      apiFetch(`${API_BASE}/api/escalations?is_escalation=1`),
+      apiFetch(`${API_BASE}/api/stats/trend?days=${_icRange}`),
+    ]);
+    const stats   = await statsRes.json();
+    const escData = await escalRes.json();
+    const trend   = await trendRes.json();
+
+    _icEscalations = escData.escalations || [];
+    _icTrendData   = trend.days || [];
+
+    _renderIcKpis(stats);
+    _renderSlaGauge(stats.sla_resolution_rate);
+    _renderScoreDist(_icEscalations);
+    _renderDeptPerf(_icEscalations);
+    _renderChStatusStacked(_icEscalations);
+    _renderScatter(_icEscalations);
+    _renderHeatmap(_icEscalations);
+    _renderIcTrend(_icTrendData);
+  } catch(e) {
+    console.error("[Interactive] load failed:", e.message);
+  }
+}
+
+function _renderIcKpis(stats) {
+  const row = document.getElementById("ic-kpi-row");
+  if (!row) return;
+  const total   = stats.total           || 0;
+  const high    = stats.high_priority   || 0;
+  const blocked = stats.blocked         || 0;
+  const sla     = stats.sla_breached    || 0;
+  const closed  = stats.total_closed    || 0;
+  const rate    = stats.sla_resolution_rate;
+  const avgH    = stats.avg_resolution_hours;
+
+  const kpis = [
+    { icon:"📋", val: total,   label:"Total Escalations",   color:"" },
+    { icon:"🔴", val: high,    label:"High Priority",        color:"red" },
+    { icon:"🚫", val: blocked, label:"Blocked",              color:"orange" },
+    { icon:"⏰", val: sla,     label:"SLA Breached",         color:"red" },
+    { icon:"✅", val: closed,  label:"Total Closed",         color:"green" },
+    { icon:"⭐", val: rate != null ? rate+"%" : "—", label:"SLA Rate", color:"blue" },
+    { icon:"⏱", val: avgH ? (avgH < 1 ? Math.round(avgH*60)+"m" : avgH+"h") : "—", label:"Avg Resolution", color:"" },
+  ];
+  row.innerHTML = kpis.map(k => `
+    <div class="ic-kpi-card ${k.color}">
+      <div class="ic-kpi-icon">${k.icon}</div>
+      <div class="ic-kpi-val">${k.val}</div>
+      <div class="ic-kpi-label">${k.label}</div>
+    </div>
+  `).join("");
+}
+
+function _renderSlaGauge(rate) {
+  _destroyIcChart("sla-gauge");
+  const ctx = document.getElementById("ic-chart-sla-gauge");
+  if (!ctx) return;
+
+  const pct   = rate != null ? Math.min(100, Math.max(0, rate)) : 0;
+  const color = pct >= 80 ? "#22c55e" : pct >= 60 ? "#f59e0b" : "#ef4444";
+
+  const el = document.getElementById("ic-gauge-pct");
+  if (el) { el.textContent = rate != null ? pct + "%" : "—"; el.style.color = color; }
+
+  const badge = document.getElementById("ic-badge-sla");
+  if (badge) badge.textContent = pct >= 80 ? "✅ On Track" : pct >= 60 ? "⚠ At Risk" : "🚨 Critical";
+
+  _icCharts["sla-gauge"] = new Chart(ctx, {
+    type: "doughnut",
+    data: {
+      datasets: [{
+        data: [pct, 100 - pct],
+        backgroundColor: [color, "#f1f5f9"],
+        borderWidth: 0,
+        hoverOffset: 0,
+      }],
+    },
+    options: {
+      rotation: -90, circumference: 180,
+      responsive: true, maintainAspectRatio: false,
+      cutout: "72%",
+      animation: { animateRotate: true, duration: 900 },
+      plugins: { legend: { display: false }, tooltip: { enabled: false } },
+    },
+  });
+}
+
+function _renderScoreDist(rows) {
+  _destroyIcChart("score-dist");
+  const ctx = document.getElementById("ic-chart-score-dist");
+  if (!ctx) return;
+
+  const buckets = Array.from({length:10}, (_,i) => ({ label: String(i+1), count: 0 }));
+  rows.forEach(r => {
+    const s = Math.round(r.priority_score || 0);
+    if (s >= 1 && s <= 10) buckets[s-1].count++;
+  });
+
+  const labels = buckets.map(b => b.label);
+  const values = buckets.map(b => b.count);
+  const colors = buckets.map(b => {
+    const s = parseInt(b.label);
+    if (s >= 8) return "#ef4444";
+    if (s >= 5) return "#f97316";
+    return "#22c55e";
+  });
+
+  const total = values.reduce((a,b) => a+b, 0);
+  const badge = document.getElementById("ic-badge-score");
+  if (badge) badge.textContent = `${total} cases`;
+
+  _icCharts["score-dist"] = new Chart(ctx, {
+    type: "bar",
+    data: {
+      labels,
+      datasets: [{
+        label: "Cases",
+        data: values,
+        backgroundColor: colors.map(c => c + "55"),
+        borderColor: colors,
+        borderWidth: 2,
+        borderRadius: 6,
+        borderSkipped: false,
+      }],
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      animation: { duration: 700 },
+      plugins: {
+        legend: { display: false },
+        tooltip: { ..._TOOLTIP_DEFAULTS, callbacks: {
+          label: c => ` ${c.parsed.y} cases (score ${c.label})`,
+        }},
+      },
+      scales: {
+        x: { grid: { display: false }, title: { display: true, text: "Priority Score", font: { size: 11 } } },
+        y: { beginAtZero: true, grid: { color: "#f1f5f9" }, ticks: { stepSize: 1 } },
+      },
+    },
+  });
+}
+
+function _renderDeptPerf(rows) {
+  _destroyIcChart("dept-perf");
+  const ctx = document.getElementById("ic-chart-dept-perf");
+  if (!ctx) return;
+
+  const deptMap = {};
+  rows.forEach(r => {
+    const d = r.assigned_department || "Unknown";
+    if (!deptMap[d]) deptMap[d] = { open:0, inprogress:0, blocked:0, closed:0 };
+    const st = r.status || "Open";
+    if (st === "Closed")            deptMap[d].closed++;
+    else if (st === "Blocked")      deptMap[d].blocked++;
+    else if (st === "In Progress")  deptMap[d].inprogress++;
+    else                            deptMap[d].open++;
+  });
+
+  const depts = Object.keys(deptMap).sort((a,b) => {
+    const tA = Object.values(deptMap[a]).reduce((x,y) => x+y, 0);
+    const tB = Object.values(deptMap[b]).reduce((x,y) => x+y, 0);
+    return tB - tA;
+  });
+
+  const badge = document.getElementById("ic-badge-dept-perf");
+  if (badge) badge.textContent = `${depts.length} depts · click to drill down`;
+
+  _icCharts["dept-perf"] = new Chart(ctx, {
+    type: "bar",
+    data: {
+      labels: depts,
+      datasets: [
+        { label: "Closed",      data: depts.map(d => deptMap[d].closed),     backgroundColor: "#22c55e99", borderColor: "#22c55e", borderWidth:2, borderRadius:4 },
+        { label: "In Progress", data: depts.map(d => deptMap[d].inprogress), backgroundColor: "#f59e0b99", borderColor: "#f59e0b", borderWidth:2, borderRadius:4 },
+        { label: "Blocked",     data: depts.map(d => deptMap[d].blocked),    backgroundColor: "#ec489999", borderColor: "#ec4899", borderWidth:2, borderRadius:4 },
+        { label: "Open",        data: depts.map(d => deptMap[d].open),       backgroundColor: "#3b82f699", borderColor: "#3b82f6", borderWidth:2, borderRadius:4 },
+      ],
+    },
+    options: {
+      indexAxis: "y",
+      responsive: true, maintainAspectRatio: false,
+      animation: { duration: 700 },
+      plugins: {
+        legend: { position: "top", labels: { boxWidth:10, boxHeight:10, font:{ size:11 } } },
+        tooltip: { ..._TOOLTIP_DEFAULTS },
+      },
+      scales: {
+        x: { stacked: true, beginAtZero: true, grid: { color: "#f1f5f9" } },
+        y: { stacked: true, grid: { display: false }, ticks: { font: { size: 11 } } },
+      },
+      onClick: (_evt, elements) => {
+        if (!elements.length) return;
+        _openIcDrilldown(depts[elements[0].index]);
+      },
+    },
+  });
+}
+
+function _renderChStatusStacked(rows) {
+  _destroyIcChart("ch-status");
+  const ctx = document.getElementById("ic-chart-ch-status");
+  if (!ctx) return;
+
+  const channels = ["gmail","slack","whatsapp"];
+  const statuses = ["Open","In Progress","Blocked","Closed"];
+  const ST_COLORS = { Open: "#3b82f6", "In Progress": "#f59e0b", Blocked: "#ec4899", Closed: "#22c55e" };
+
+  const data = {};
+  channels.forEach(ch => { data[ch] = { Open:0, "In Progress":0, Blocked:0, Closed:0 }; });
+  rows.forEach(r => {
+    const ch = r.source_channel || "gmail";
+    const st = r.status || "Open";
+    if (data[ch] && data[ch][st] != null) data[ch][st]++;
+  });
+
+  const badge = document.getElementById("ic-badge-ch-status");
+  if (badge) badge.textContent = `${rows.length} total`;
+
+  _icCharts["ch-status"] = new Chart(ctx, {
+    type: "bar",
+    data: {
+      labels: channels.map(c => c.charAt(0).toUpperCase() + c.slice(1)),
+      datasets: statuses.map(st => ({
+        label: st,
+        data: channels.map(ch => data[ch][st] || 0),
+        backgroundColor: ST_COLORS[st] + "88",
+        borderColor: ST_COLORS[st],
+        borderWidth: 2,
+        borderRadius: 5,
+      })),
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      animation: { duration: 700 },
+      plugins: {
+        legend: { position: "top", labels: { boxWidth:10, boxHeight:10, font:{ size:11 } } },
+        tooltip: { ..._TOOLTIP_DEFAULTS },
+      },
+      scales: {
+        x: { stacked: true, grid: { display: false } },
+        y: { stacked: true, beginAtZero: true, grid: { color: "#f1f5f9" } },
+      },
+    },
+  });
+}
+
+function _renderScatter(rows) {
+  _destroyIcChart("scatter");
+  const ctx = document.getElementById("ic-chart-scatter");
+  if (!ctx) return;
+
+  const COLORS = { gmail: "#f59e0b", slack: "#8b5cf6", whatsapp: "#22c55e" };
+  const groups = { gmail: [], slack: [], whatsapp: [] };
+
+  rows.forEach(r => {
+    if (r.status !== "Closed" || !r.closed_at || !r.created_at) return;
+    const hrs = (new Date(r.closed_at) - new Date(r.created_at)) / 3600000;
+    if (hrs < 0 || hrs > 500) return;
+    const ch = r.source_channel || "gmail";
+    if (groups[ch]) groups[ch].push({ x: r.priority_score || 0, y: Math.round(hrs * 10) / 10 });
+  });
+
+  const totalPts = Object.values(groups).reduce((a,g) => a + g.length, 0);
+  const badge = document.getElementById("ic-badge-scatter");
+  if (badge) badge.textContent = `${totalPts} closed cases`;
+
+  _icCharts["scatter"] = new Chart(ctx, {
+    type: "scatter",
+    data: {
+      datasets: Object.entries(groups).map(([ch, pts]) => ({
+        label: ch.charAt(0).toUpperCase() + ch.slice(1),
+        data: pts,
+        backgroundColor: (COLORS[ch] || "#64748b") + "99",
+        borderColor: COLORS[ch] || "#64748b",
+        borderWidth: 1.5,
+        pointRadius: 6,
+        pointHoverRadius: 8,
+      })),
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      animation: { duration: 600 },
+      plugins: {
+        legend: { position: "top", labels: { boxWidth:10, boxHeight:10, font:{ size:11 } } },
+        tooltip: { ..._TOOLTIP_DEFAULTS, callbacks: {
+          label: c => ` Score: ${c.parsed.x}  ·  ${c.parsed.y}h  (${c.dataset.label})`,
+        }},
+      },
+      scales: {
+        x: { title: { display: true, text: "Priority Score", font:{ size:11 } }, min:0, max:10, grid:{ color:"#f1f5f9" } },
+        y: { title: { display: true, text: "Resolution Time (hours)", font:{ size:11 } }, beginAtZero:true, grid:{ color:"#f1f5f9" } },
+      },
+    },
+  });
+}
+
+function _renderHeatmap(rows) {
+  _destroyIcChart("heatmap");
+  const ctx = document.getElementById("ic-chart-heatmap");
+  if (!ctx) return;
+
+  const hourCounts = Array(24).fill(0);
+  rows.forEach(r => {
+    if (!r.created_at) return;
+    hourCounts[new Date(r.created_at).getHours()]++;
+  });
+
+  const labels = hourCounts.map((_, i) => `${i.toString().padStart(2,"0")}:00`);
+  const max    = Math.max(...hourCounts, 1);
+  const colors = hourCounts.map(v => {
+    const ratio = v / max;
+    const r = Math.round(59  + ratio * 196);
+    const g = Math.round(130 - ratio * 97);
+    const b = Math.round(246 - ratio * 180);
+    return `rgba(${r},${g},${b},0.85)`;
+  });
+
+  const peakH = hourCounts.indexOf(max);
+  const badge = document.getElementById("ic-badge-heatmap");
+  if (badge) badge.textContent = `peak: ${peakH.toString().padStart(2,"0")}:00 (${max})`;
+
+  _icCharts["heatmap"] = new Chart(ctx, {
+    type: "bar",
+    data: {
+      labels,
+      datasets: [{
+        label: "Arrivals",
+        data: hourCounts,
+        backgroundColor: colors,
+        borderRadius: 4,
+        borderSkipped: false,
+      }],
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      animation: { duration: 700 },
+      plugins: {
+        legend: { display: false },
+        tooltip: { ..._TOOLTIP_DEFAULTS, callbacks: {
+          label: c => ` ${c.parsed.y} escalations at ${c.label}`,
+        }},
+      },
+      scales: {
+        x: { grid: { display: false }, ticks: { maxRotation: 45, font: { size: 10 } } },
+        y: { beginAtZero: true, grid: { color: "#f1f5f9" }, ticks: { stepSize: 1 } },
+      },
+    },
+  });
+}
+
+function _renderIcTrend(days) {
+  _destroyIcChart("ic-trend");
+  const ctx = document.getElementById("ic-chart-trend");
+  if (!ctx) return;
+
+  const labels  = days.map(d => new Date(d.date + "T00:00:00")
+    .toLocaleDateString("en-IN", { day: "2-digit", month: "short" }));
+  const totals  = days.map(d => d.total  || 0);
+  const highs   = days.map(d => d.high   || 0);
+  const closeds = days.map(d => d.closed || 0);
+  const peak    = Math.max(...totals, 1);
+
+  const badge = document.getElementById("ic-badge-trend");
+  if (badge) badge.textContent = `${_icRange}d · peak: ${peak}`;
+
+  const type = _icTrendType;
+  const gTotal  = _makeGradient(ctx, "#6366f1", 0.35);
+  const gHigh   = _makeGradient(ctx, "#ef4444", 0.22);
+  const gClosed = _makeGradient(ctx, "#22c55e", 0.22);
+
+  const dsBase = (label, data, color, grad) => ({
+    label, data,
+    borderColor: color,
+    backgroundColor: type === "line" ? grad : color + "88",
+    fill: type === "line",
+    tension: 0.4,
+    pointRadius: type === "line" ? 5 : 0,
+    pointBackgroundColor: color,
+    borderWidth: type === "line" ? 2.5 : 0,
+    borderRadius: type === "bar" ? 6 : undefined,
+    borderSkipped: false,
+  });
+
+  _icCharts["ic-trend"] = new Chart(ctx, {
+    type,
+    data: {
+      labels,
+      datasets: [
+        dsBase("Total",        totals,  "#6366f1", gTotal),
+        dsBase("High Urgency", highs,   "#ef4444", gHigh),
+        dsBase("Closed",       closeds, "#22c55e", gClosed),
+      ],
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: "index", intersect: false },
+      animation: { duration: 800 },
+      plugins: {
+        tooltip: { ..._TOOLTIP_DEFAULTS },
+        legend: { position: "top", labels: { boxWidth:10, boxHeight:10, padding:16, font:{ size:12 }, usePointStyle:true, pointStyle:"circle" } },
+      },
+      scales: {
+        x: { grid: { display: false }, ticks: { font: { size: 11 } } },
+        y: { beginAtZero: true, grid: { color: "#f1f5f9" }, ticks: { stepSize: 1 } },
+      },
+    },
+  });
+}
+
+function _openIcDrilldown(deptName) {
+  const deptRows = _icEscalations.filter(r => r.assigned_department === deptName);
+  const panel = document.getElementById("ic-drilldown");
+  const title = document.getElementById("ic-dd-title");
+  const grid  = document.getElementById("ic-dd-grid");
+  if (!panel || !title || !grid) return;
+
+  title.textContent = `🏢 ${deptName} — ${deptRows.length} case${deptRows.length !== 1 ? "s" : ""}`;
+
+  const open = deptRows.filter(r => r.status === "Open").length;
+  const ip   = deptRows.filter(r => r.status === "In Progress").length;
+  const bl   = deptRows.filter(r => r.status === "Blocked").length;
+  const cl   = deptRows.filter(r => r.status === "Closed").length;
+  const hi   = deptRows.filter(r => (r.priority_score||0) >= 8).length;
+
+  grid.innerHTML = `
+    <div class="ic-dd-stats-row">
+      <div class="ic-dd-stat"><span class="ic-dd-val blue">${open}</span><span class="ic-dd-lbl">Open</span></div>
+      <div class="ic-dd-stat"><span class="ic-dd-val orange">${ip}</span><span class="ic-dd-lbl">In Progress</span></div>
+      <div class="ic-dd-stat"><span class="ic-dd-val pink">${bl}</span><span class="ic-dd-lbl">Blocked</span></div>
+      <div class="ic-dd-stat"><span class="ic-dd-val green">${cl}</span><span class="ic-dd-lbl">Closed</span></div>
+      <div class="ic-dd-stat"><span class="ic-dd-val red">${hi}</span><span class="ic-dd-lbl">High Priority</span></div>
+    </div>
+    <div class="ic-dd-table-wrap">
+      <table class="ic-dd-table">
+        <thead><tr><th>#</th><th>Account</th><th>Status</th><th>Priority</th><th>Owner</th></tr></thead>
+        <tbody>${deptRows.slice(0,12).map(r => `
+          <tr>
+            <td>#${r.id}</td>
+            <td>${esc(r.account_name || "—")}</td>
+            <td><span class="status-pill ${statusClass(r.status)}">${r.status}</span></td>
+            <td><span class="priority-score ${priorityClass(r.priority_score)}">${r.priority_score}</span></td>
+            <td>${esc(r.owner || "—")}</td>
+          </tr>`).join("")}
+        ${deptRows.length > 12 ? `<tr><td colspan="5" style="text-align:center;color:#9ca3af;font-size:12px;">… and ${deptRows.length - 12} more</td></tr>` : ""}
+        </tbody>
+      </table>
+    </div>
+  `;
+
+  panel.style.display = "block";
+  panel.scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+function closeIcDrilldown() {
+  const panel = document.getElementById("ic-drilldown");
+  if (panel) panel.style.display = "none";
 }
