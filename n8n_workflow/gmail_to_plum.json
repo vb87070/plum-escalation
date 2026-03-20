@@ -26,7 +26,7 @@
     {
       "parameters": {
         "method": "POST",
-        "url": "http://localhost:8000/webhook/ingest",
+        "url": "https://plum-escalation-production.up.railway.app/webhook/ingest",
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
